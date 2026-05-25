@@ -1,12 +1,14 @@
 #include <filesystem>
 #include "model.hpp"
 #include "constants.hpp"
+#include "splat-types.h"
 #include "tile_bounds.hpp"
 #include "project_gaussians.hpp"
 #include "rasterize_gaussians.hpp"
 #include "tensor_math.hpp"
 #include "gsplat.hpp"
 #include "utils.hpp"
+#include <load-spz.h>
 
 #ifdef USE_MPS
 #include <torch/mps.h>
@@ -53,6 +55,11 @@ torch::Tensor psnr(const torch::Tensor& rendered, const torch::Tensor& gt){
 
 torch::Tensor l1(const torch::Tensor& rendered, const torch::Tensor& gt){
     return torch::abs(gt - rendered).mean();
+}
+
+template<typename T>
+std::vector<T> tensor_to_vector(const torch::Tensor t){
+    return std::vector<T>(t.data_ptr<float>(), t.data_ptr<float>() + t.numel());
 }
 
 void Model::setupOptimizers(){
@@ -494,12 +501,24 @@ void Model::afterTrain(int step){
 }
 
 void Model::save(const std::string &filename, int step){
-    if (fs::path(filename).extension().string() == ".splat"){
+    std::string extension = fs::path(filename).extension().string(); 
+    if (extension == ".splat"){
         saveSplat(filename);
-    }else{
-        savePly(filename, step);
+        std::cout << "Wrote " << filename << std::endl;
     }
-    std::cout << "Wrote " << filename << std::endl;
+    else if (extension == ".ply") {
+        savePly(filename, step);
+        std::cout << "Wrote " << filename << std::endl;
+    }
+    else {
+        bool success = saveSpz(filename);
+        if (success) {
+            std::cout << "Wrote " << filename << std::endl;
+        }
+        else {
+            std::cerr << "Failed to write " << filename << ", aborting save." << std::endl;
+        }
+    }
 }
 
 void Model::savePly(const std::string &filename, int step){
@@ -595,6 +614,41 @@ void Model::saveSplat(const std::string &filename){
         o.write(reinterpret_cast<const char *>(quatsCpu[idx].data_ptr()), sizeof(uint8_t) * 4);
     }
     o.close();
+}
+
+bool Model::saveSpz(const std::string &filename){
+    auto numPoints = means.size(0);
+
+
+    torch::Tensor meansCpu = keepCrs ? (means.cpu() / scale) + translation : means.cpu();
+    torch::Tensor scalesCpu = keepCrs ? (scales.cpu() / scale) : scales.cpu();
+    
+    torch::Tensor meansFlat = meansCpu.flatten();
+    torch::Tensor scalesFlat = scalesCpu.flatten();
+    torch::Tensor colorsFlat = featuresDc.cpu().flatten(); // raw DC coefficients
+    torch::Tensor opacFlat = opacities.flatten().cpu();
+    torch::Tensor quatsFlat = quats.flatten().cpu();
+    torch::Tensor shRestFlat = featuresRest.cpu().transpose(1, 2).flatten();
+    
+    spz::GaussianCloud gaussians;
+    gaussians.numPoints = meansCpu.size(0);
+    gaussians.shDegree = shDegree;
+    gaussians.antialiased = false;
+    gaussians.positions = tensor_to_vector<float>(meansFlat);
+    gaussians.scales = tensor_to_vector<float>(scalesFlat);
+    gaussians.rotations = tensor_to_vector<float>(quatsFlat);
+    gaussians.alphas = tensor_to_vector<float>(opacFlat);
+    gaussians.colors = tensor_to_vector<float>(colorsFlat);
+    gaussians.sh = tensor_to_vector<float>(shRestFlat);
+
+    auto options = spz::PackOptions{
+        .version = 3,       // V4 available but not handled by many viewers
+        .from = spz::CoordinateSystem::RUB,
+        .sh1Bits = 6,
+        .shRestBits = 5
+    };
+    bool success = spz::saveSpz(gaussians, options, filename);
+    return success;
 }
 
 void Model::saveDebugPly(const std::string &filename, int step){

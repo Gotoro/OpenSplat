@@ -57,7 +57,15 @@ FetchContent_Declare(nanoflann
 FetchContent_Declare(cxxopts
     URL https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.2.0.zip
 )
-FetchContent_MakeAvailable(nlohmann_json nanoflann cxxopts)
+FetchContent_Declare(spz
+    URL https://github.com/nianticlabs/spz/archive/refs/tags/v3.0.0.zip
+)
+set(SPZ_BUILD_PYTHON_BINDINGS OFF)
+set(SPZ_BUILD_TOOLS OFF)
+set(SPZ_BUILD_EXTENSIONS OFF)
+set(SPZ_BUILD_WASM OFF)
+set(SPZ_SHOULD_INSTALL OFF)
+FetchContent_MakeAvailable(nlohmann_json nanoflann cxxopts spz)
 if((GPU_RUNTIME STREQUAL "CUDA") OR (GPU_RUNTIME STREQUAL "HIP"))
     FetchContent_Declare(glm
         URL https://github.com/g-truc/glm/archive/refs/tags/1.0.1.zip
@@ -267,6 +275,7 @@ target_link_libraries(opensplat PRIVATE
     nlohmann_json::nlohmann_json
     cxxopts::cxxopts
     nanoflann::nanoflann
+    spz::spz
 )
 if (NOT WIN32)
     target_link_libraries(opensplat PUBLIC pthread)
