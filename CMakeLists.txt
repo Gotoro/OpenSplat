@@ -7,6 +7,7 @@ set(OPENCV_DIR "OPENCV_DIR-NOTFOUND" CACHE PATH "Path to the OPENCV installation
 set(OPENSPLAT_MAX_CUDA_COMPATIBILITY OFF CACHE BOOL "Build for maximum CUDA device compatibility")
 set(OPENSPLAT_BUILD_VISUALIZER OFF CACHE BOOL "Build visualizer application")
 set(OPENSPLAT_USE_FAST_MATH OFF CACHE BOOL "Enable fast math optimizations for GPU kernels (-use_fast_math / -ffast-math)")
+set(OPENSPLAT_USE_PCH ON CACHE BOOL "Use precompiled headers to speed up compilation")
 
 set(FETCH_DEPENDENCIES ON CACHE BOOL "Fetch additional dependencies from the Internet during configuration")
 
@@ -278,6 +279,15 @@ endif()
 
 add_executable(opensplat ${OPENSPLAT_SRC_FILES})
 
+if(OPENSPLAT_USE_PCH)
+    target_precompile_headers(opensplat PRIVATE
+        <torch/torch.h>
+        <opencv2/core/core.hpp>
+        <opencv2/imgcodecs.hpp>
+        <opencv2/imgproc.hpp>
+    )
+endif()
+
 install(TARGETS opensplat DESTINATION bin)
 set_property(TARGET opensplat PROPERTY CXX_STANDARD 17)
 target_include_directories(opensplat PRIVATE
@@ -307,6 +317,9 @@ endif()
 
 if(OPENSPLAT_BUILD_SIMPLE_TRAINER)
     add_executable(simple_trainer simple_trainer.cpp project_gaussians.cpp rasterize_gaussians.cpp cv_utils.cpp)
+    if(OPENSPLAT_USE_PCH)
+        target_precompile_headers(simple_trainer PRIVATE <torch/torch.h>)
+    endif()
     install(TARGETS simple_trainer DESTINATION bin)
     target_include_directories(simple_trainer PRIVATE
         ${PROJECT_SOURCE_DIR}/rasterizer
