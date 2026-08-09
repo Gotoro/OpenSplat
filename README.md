@@ -5,7 +5,7 @@ A free and open source implementation of 3D [gaussian splatting](https://www.you
 <img src="https://github.com/pierotofy/OpenSplat/assets/1951843/c9327c7c-31ad-402d-a5a5-04f7602ca5f5" width="49%" />
 <img src="https://github.com/pierotofy/OpenSplat/assets/1951843/eba4ae75-2c88-4c9e-a66b-608b574d085f" width="49%" />
 
-OpenSplat takes camera poses + sparse points in [COLMAP](https://colmap.github.io/), [OpenSfM](https://github.com/mapillary/OpenSfM), [ODM](https://github.com/OpenDroneMap/ODM),  [OpenMVG](https://github.com/OpenMVG/OpenMVG) or [nerfstudio](https://docs.nerf.studio/quickstart/custom_dataset.html) project format and computes a [scene file](https://drive.google.com/file/d/12lmvVWpFlFPL6nxl2e2d-4u4a31RCSKT/view?usp=sharing) (.ply, .splat, or .spz) that can be later imported for [viewing](https://antimatter15.com/splat/?url=https://splat.uav4geo.com/banana.splat), editing and rendering in other [software](https://github.com/MrNeRF/awesome-3D-gaussian-splatting?tab=readme-ov-file#open-source-implementations).
+OpenSplat takes camera poses + sparse points in [COLMAP](https://colmap.github.io/), [OpenSfM](https://github.com/mapillary/OpenSfM), [ODX](https://github.com/WebODM/ODX),  [OpenMVG](https://github.com/OpenMVG/OpenMVG) or [nerfstudio](https://docs.nerf.studio/quickstart/custom_dataset.html) project format and computes a [scene file](https://drive.google.com/file/d/12lmvVWpFlFPL6nxl2e2d-4u4a31RCSKT/view?usp=sharing) (.ply, .splat, or .spz) that can be later imported for [viewing](https://antimatter15.com/splat/?url=https://splat.uav4geo.com/banana.splat), editing and rendering in other [software](https://github.com/MrNeRF/awesome-3D-gaussian-splatting?tab=readme-ov-file#open-source-implementations).
 
 Graphics card recommended, but not required! OpenSplat runs the fastest on NVIDIA, AMD and Apple (Metal) GPUs, but can also run entirely on the CPU (~100x slower).
 
@@ -216,7 +216,7 @@ cd build
 
 The program will generate an output `splat.ply` file which can then be dragged and dropped in one of the many [viewers](https://github.com/MrNeRF/awesome-3D-gaussian-splatting?tab=readme-ov-file#viewers) such as  https://playcanvas.com/viewer. You can also edit/cleanup the scene using https://playcanvas.com/supersplat/editor. The program will also output a `cameras.json` file in the same directory which can be used by some viewers.
 
-To run on your own data, choose the path to an existing [COLMAP](https://colmap.github.io/), [OpenSfM](https://github.com/mapillary/OpenSfM), [ODM](https://github.com/OpenDroneMap/ODM) or [nerfstudio](https://docs.nerf.studio/quickstart/custom_dataset.html) project. The project must have sparse points included (random initialization is not supported, see https://github.com/pierotofy/OpenSplat/issues/7).
+To run on your own data, choose the path to an existing [COLMAP](https://colmap.github.io/), [OpenSfM](https://github.com/mapillary/OpenSfM), [ODX](https://github.com/WebODM/ODX) or [nerfstudio](https://docs.nerf.studio/quickstart/custom_dataset.html) project. The project must have sparse points included (random initialization is not supported, see https://github.com/pierotofy/OpenSplat/issues/7).
 
 There's several parameters you can tune. To view the full list:
 
