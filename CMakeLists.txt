@@ -58,7 +58,7 @@ FetchContent_Declare(cxxopts
     URL https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.2.0.zip
 )
 FetchContent_Declare(spz
-    URL https://github.com/nianticlabs/spz/archive/refs/tags/v3.0.0.zip
+    URL https://github.com/nianticlabs/spz/archive/affd0ecea7fbb4c265ee119475af7ee5b2997482.zip
 )
 set(SPZ_BUILD_PYTHON_BINDINGS OFF)
 set(SPZ_BUILD_TOOLS OFF)
