@@ -72,6 +72,7 @@ struct Model{
   void save(const std::string &filename, int step);
   void savePly(const std::string &filename, int step);
   void saveSplat(const std::string &filename);
+  bool saveSpz(const std::string &filename);
   void saveDebugPly(const std::string &filename, int step);
   int loadPly(const std::string &filename);
   torch::Tensor mainLoss(torch::Tensor &rgb, torch::Tensor &gt, float ssimWeight);

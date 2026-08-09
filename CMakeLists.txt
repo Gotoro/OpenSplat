@@ -52,6 +52,12 @@ include(FetchContent)
 
 set(NANOFLANN_BUILD_EXAMPLES OFF)
 set(NANOFLANN_BUILD_TESTS OFF)
+set(SPZ_BUILD_PYTHON_BINDINGS OFF)
+set(SPZ_BUILD_TOOLS OFF)
+set(SPZ_BUILD_EXTENSIONS OFF)
+set(SPZ_BUILD_WASM OFF)
+set(SPZ_SHOULD_INSTALL OFF)
+
 if(FETCH_DEPENDENCIES)
     FetchContent_Declare(nlohmann_json
         URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip
@@ -62,7 +68,10 @@ if(FETCH_DEPENDENCIES)
     FetchContent_Declare(cxxopts
         URL https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.2.0.zip
     )
-    FetchContent_MakeAvailable(nlohmann_json nanoflann cxxopts)
+    FetchContent_Declare(spz
+        URL https://github.com/nianticlabs/spz/archive/affd0ecea7fbb4c265ee119475af7ee5b2997482.zip
+    )
+    FetchContent_MakeAvailable(nlohmann_json nanoflann cxxopts spz)
 else()
     find_package(nlohmann_json)
     find_package(nanoflann)
@@ -282,6 +291,7 @@ target_link_libraries(opensplat PRIVATE
     nlohmann_json::nlohmann_json
     cxxopts::cxxopts
     nanoflann::nanoflann
+    spz::spz
 )
 if (NOT WIN32)
     target_link_libraries(opensplat PUBLIC pthread)
