@@ -69,7 +69,7 @@ if(FETCH_DEPENDENCIES)
         URL https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.2.0.zip
     )
     FetchContent_Declare(spz
-        URL https://github.com/nianticlabs/spz/archive/affd0ecea7fbb4c265ee119475af7ee5b2997482.zip
+        URL https://github.com/pierotofy/spz/archive/369f6a702f79e0db51ba2abc19d6d57dc307ef4f.zip
     )
     FetchContent_MakeAvailable(nlohmann_json nanoflann cxxopts spz)
 else()
