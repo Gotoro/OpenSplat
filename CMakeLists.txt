@@ -76,6 +76,7 @@ else()
     find_package(nlohmann_json)
     find_package(nanoflann)
     find_package(cxxopts)
+    find_package(spz)
 endif()
 
 if((GPU_RUNTIME STREQUAL "CUDA") OR (GPU_RUNTIME STREQUAL "HIP"))
