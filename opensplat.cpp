@@ -41,16 +41,14 @@ int main(int argc, char *argv[]){
         ("densify-size-thresh", "Gaussians' scales below this threshold are duplicated, otherwise split", cxxopts::value<float>()->default_value("0.01"))
         ("stop-screen-size-at", "Stop splitting gaussians that are larger than [split-screen-size] after these many steps", cxxopts::value<int>()->default_value("4000"))
         ("split-screen-size", "Split gaussians that are larger than this percentage of screen space", cxxopts::value<float>()->default_value("0.05"))
-        ("colmap-image-path", "Override the default image path for COLMAP-based input", cxxopts::value<std::string>()->default_value(""))
 #ifdef USE_VISUALIZATION
         ("has-visualization", "Show the visualization steps of training", cxxopts::value<bool>()->default_value("0"))
 #endif
-
         ("h,help", "Print usage")
         ("version", "Print version")
         ;
     options.parse_positional({ "input" });
-    options.positional_help("[colmap/nerfstudio/opensfm/odm/openmvg project path]");
+    options.positional_help("[colmap/nerfstudio/opensfm/odx/openmvg project path]");
     cxxopts::ParseResult result;
     try {
         result = options.parse(argc, argv);
@@ -94,10 +92,10 @@ int main(int argc, char *argv[]){
     const float densifySizeThresh = result["densify-size-thresh"].as<float>();
     const int stopScreenSizeAt = result["stop-screen-size-at"].as<int>();
     const float splitScreenSize = result["split-screen-size"].as<float>();
-    const std::string colmapImageSourcePath = result["colmap-image-path"].as<std::string>();
-#ifdef USE_VISUALIZATION
-    const bool hasVisualization = result["has-visualization"].as<bool>();
-#endif
+    #ifdef USE_VISUALIZATION
+        const bool hasVisualization = result["has-visualization"].as<bool>();
+    #endif
+
     torch::Device device = torch::kCPU;
     int displayStep = 10;
 
@@ -119,7 +117,7 @@ int main(int argc, char *argv[]){
 #endif
 
     try{
-        InputData inputData = inputDataFromX(projectRoot, colmapImageSourcePath);
+        InputData inputData = inputDataFromX(projectRoot);
 
         parallel_for(inputData.cameras.begin(), inputData.cameras.end(), [&downScaleFactor](Camera &cam){
             cam.loadImage(downScaleFactor);
