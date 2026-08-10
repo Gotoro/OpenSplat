@@ -9,8 +9,6 @@ set(OPENSPLAT_BUILD_VISUALIZER OFF CACHE BOOL "Build visualizer application")
 set(OPENSPLAT_USE_FAST_MATH OFF CACHE BOOL "Enable fast math optimizations for GPU kernels (-use_fast_math / -ffast-math)")
 set(OPENSPLAT_USE_PCH ON CACHE BOOL "Use precompiled headers to speed up compilation")
 
-set(FETCH_DEPENDENCIES ON CACHE BOOL "Fetch additional dependencies from the Internet during configuration")
-
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 # Read version
@@ -53,41 +51,59 @@ include(FetchContent)
 
 set(NANOFLANN_BUILD_EXAMPLES OFF)
 set(NANOFLANN_BUILD_TESTS OFF)
-set(SPZ_BUILD_PYTHON_BINDINGS OFF)
-set(SPZ_BUILD_TOOLS OFF)
-set(SPZ_BUILD_EXTENSIONS OFF)
-set(SPZ_BUILD_WASM OFF)
-set(SPZ_SHOULD_INSTALL OFF)
+set(ZLIB_BUILD_TESTING OFF)
+set(ZLIB_BUILD_SHARED OFF)
+set(ZLIB_INSTALL OFF)
 
-if(FETCH_DEPENDENCIES)
+find_package(nlohmann_json QUIET)
+if(NOT nlohmann_json_FOUND)
+    message(STATUS "nlohmann_json not found, fetching it")
     FetchContent_Declare(nlohmann_json
         URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.zip
     )
+    FetchContent_MakeAvailable(nlohmann_json)
+endif()
+
+find_package(nanoflann QUIET)
+if(NOT nanoflann_FOUND)
+    message(STATUS "nanoflann not found, fetching it")
     FetchContent_Declare(nanoflann
         URL https://github.com/jlblancoc/nanoflann/archive/refs/tags/v1.5.5.zip
     )
+    FetchContent_MakeAvailable(nanoflann)
+endif()
+
+find_package(cxxopts QUIET)
+if(NOT cxxopts_FOUND)
+    message(STATUS "cxxopts not found, fetching it")
     FetchContent_Declare(cxxopts
         URL https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.2.0.zip
     )
-    FetchContent_Declare(spz
-        URL https://github.com/nianticlabs/spz/archive/affd0ecea7fbb4c265ee119475af7ee5b2997482.zip
-    )
-    FetchContent_MakeAvailable(nlohmann_json nanoflann cxxopts spz)
-else()
-    find_package(nlohmann_json)
-    find_package(nanoflann)
-    find_package(cxxopts)
-    find_package(spz)
+    FetchContent_MakeAvailable(cxxopts)
 endif()
 
+find_package(ZLIB QUIET)
+if(ZLIB_FOUND)
+    set(ZLIB_LIB ZLIB::ZLIB)
+else()
+    message(STATUS "ZLIB not found, fetching it")
+    FetchContent_Declare(zlib
+        URL https://github.com/pierotofy/OpenSplat/releases/download/v1.1.4/zlib-1.3.2.tar.gz
+    )
+    FetchContent_MakeAvailable(zlib)
+    set(ZLIB_LIB zlibstatic)
+endif()
+
+add_subdirectory(vendor/spz)
+
 if((GPU_RUNTIME STREQUAL "CUDA") OR (GPU_RUNTIME STREQUAL "HIP"))
-    if(FETCH_DEPENDENCIES)
+    find_package(glm QUIET)
+    if(NOT glm_FOUND)
+        message(STATUS "glm not found, fetching it")
         FetchContent_Declare(glm
             URL https://github.com/g-truc/glm/archive/refs/tags/1.0.1.zip
         )
         FetchContent_MakeAvailable(glm)
-    else()
-        find_package(glm)
     endif()
 endif()
 
@@ -265,7 +281,7 @@ target_include_directories(gsplat_cpu PRIVATE ${TORCH_INCLUDE_DIRS})
 set(OPENSPLAT_SRC_FILES opensplat.cpp point_io.cpp nerfstudio.cpp model.cpp
 kdtree_tensor.cpp spherical_harmonics.cpp cv_utils.cpp utils.cpp project_gaussians.cpp
 rasterize_gaussians.cpp ssim.cpp optim_scheduler.cpp colmap.cpp opensfm.cpp openmvg.cpp input_data.cpp
-tensor_math.cpp)
+tensor_math.cpp rad.cpp)
 
 if (OPENSPLAT_BUILD_VISUALIZER)
     if (Pangolin_FOUND)
@@ -302,6 +318,7 @@ target_link_libraries(opensplat PRIVATE
     nlohmann_json::nlohmann_json
     cxxopts::cxxopts
     nanoflann::nanoflann
+    ${ZLIB_LIB}
     spz::spz
 )
 if (NOT WIN32)
