@@ -68,6 +68,19 @@ InputData inputDataFromColmap(const std::string &projectRoot){
             cam->k2 = readBinary<double>(camf);
             cam->p1 = readBinary<double>(camf);
             cam->p2 = readBinary<double>(camf);
+        }else if (model == FullOpenCV){
+            cam->fx = readBinary<double>(camf);
+            cam->fy = readBinary<double>(camf);
+            cam->cx = readBinary<double>(camf);
+            cam->cy = readBinary<double>(camf);
+            cam->k1 = readBinary<double>(camf);
+            cam->k2 = readBinary<double>(camf);
+            cam->p1 = readBinary<double>(camf);
+            cam->p2 = readBinary<double>(camf);
+            cam->k3 = readBinary<double>(camf);
+            cam->k4 = readBinary<double>(camf);
+            cam->k5 = readBinary<double>(camf);
+            cam->k6 = readBinary<double>(camf);
         }else{
             throw std::runtime_error("Unsupported camera model: " + std::to_string(model));
         }

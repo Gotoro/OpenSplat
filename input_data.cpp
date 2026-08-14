@@ -117,11 +117,11 @@ torch::Tensor Camera::getImage(int downscaleFactor){
 }
 
 bool Camera::hasDistortionParameters(){
-    return k1 != 0.0f || k2 != 0.0f || k3 != 0.0f || p1 != 0.0f || p2 != 0.0f;
+    return k1 != 0.0f || k2 != 0.0f || k3 != 0.0f || k4 != 0.0f || k5 != 0.0f || k6 != 0.0f || p1 != 0.0f || p2 != 0.0f;
 }
 
 std::vector<float> Camera::undistortionParameters(){
-    std::vector<float> p = { k1, k2, p1, p2, k3, 0.0f, 0.0f, 0.0f };
+    std::vector<float> p = { k1, k2, p1, p2, k3, k4, k5, k6 };
     return p;
 }
 
