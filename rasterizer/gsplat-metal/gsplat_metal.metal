@@ -1,4 +1,4 @@
-#include <metal_stdlib>
+﻿#include <metal_stdlib>
 
 using namespace metal;
 
@@ -296,6 +296,10 @@ inline int2 read_packed_int2(constant int* arr, int idx) {
     return int2(arr[2*idx], arr[2*idx+1]);
 }
 
+inline int2 read_packed_int2(device const int* arr, int idx) {
+    return int2(arr[2*idx], arr[2*idx+1]);
+}
+
 inline void write_packed_int2(device int* arr, int idx, int2 val) {
     arr[2*idx] = val.x;
     arr[2*idx+1] = val.y;
@@ -314,6 +318,10 @@ inline float2 read_packed_float2(constant float* arr, int idx) {
 }
 
 inline float2 read_packed_float2(device float* arr, int idx) {
+    return float2(arr[2*idx], arr[2*idx+1]);
+}
+
+inline float2 read_packed_float2(device const float* arr, int idx) {
     return float2(arr[2*idx], arr[2*idx+1]);
 }
 
@@ -337,6 +345,10 @@ inline float3 read_packed_float3(constant float* arr, int idx) {
 }
 
 inline float3 read_packed_float3(device float* arr, int idx) {
+    return float3(arr[3*idx], arr[3*idx+1], arr[3*idx+2]);
+}
+
+inline float3 read_packed_float3(device const float* arr, int idx) {
     return float3(arr[3*idx], arr[3*idx+1], arr[3*idx+2]);
 }
 
@@ -430,6 +442,110 @@ kernel void project_gaussians_forward_kernel(
     depths[idx] = p_view.z;
     radii[idx] = (int)radius;
     write_packed_float2(xys, idx, center);
+}
+
+// 3-channel tile rasterizer. Unlike nd_rasterize_forward_kernel it stages the
+// tile's gaussians in threadgroup memory, accumulates the pixel colour in
+// registers instead of read-modify-writing out_img once per gaussian, and lets
+// the whole tile stop early once every pixel has saturated.
+kernel void rasterize_forward_kernel(
+    constant uint3& tile_bounds,
+    constant uint3& img_size,
+    device const int32_t* gaussian_ids_sorted,
+    device const int* tile_bins, // int2
+    device const float* xys, // float2
+    device const float* conics, // float3
+    device const float* colors, // float3
+    device const float* opacities,
+    device float* final_Ts,
+    device int* final_index,
+    device float* out_img, // float3
+    constant float* background, // single float3
+    uint3 gp [[thread_position_in_grid]],
+    uint3 blockIdx [[threadgroup_position_in_grid]],
+    uint tr [[thread_index_in_threadgroup]]
+) {
+    const int32_t tile_id = blockIdx.y * tile_bounds.x + blockIdx.x;
+    const uint i = gp.y;
+    const uint j = gp.x;
+    const float px = (float)j;
+    const float py = (float)i;
+    const int32_t pix_id = (int32_t)(i * img_size.x + j);
+
+    // Out-of-bounds threads stay resident so that the threadgroup barriers
+    // below remain uniform; they simply never write anything.
+    const bool inside = (i < img_size.y && j < img_size.x);
+
+    const int2 range = read_packed_int2(tile_bins, tile_id);
+    const int num_batches = (range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE;
+
+    threadgroup packed_float3 xy_opacity_batch[BLOCK_SIZE];
+    threadgroup packed_float3 conic_batch[BLOCK_SIZE];
+    threadgroup packed_float3 rgbs_batch[BLOCK_SIZE];
+    threadgroup atomic_int num_done;
+
+    bool done = !inside;
+    float T = 1.f;
+    float3 pix_out = {0.f, 0.f, 0.f};
+    // Mirrors the index the equivalent scalar loop would end on
+    int idx = range.x;
+
+    for (int b = 0; b < num_batches; ++b) {
+        // Also fences the previous batch's reads before we overwrite the arrays
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (tr == 0) atomic_store_explicit(&num_done, 0, memory_order_relaxed);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (done) atomic_fetch_add_explicit(&num_done, 1, memory_order_relaxed);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (atomic_load_explicit(&num_done, memory_order_relaxed) == BLOCK_SIZE) break;
+
+        const int batch_start = range.x + BLOCK_SIZE * b;
+        const int load_idx = batch_start + (int)tr;
+        if (load_idx < range.y) {
+            const int32_t g_id = gaussian_ids_sorted[load_idx];
+            const float2 xy = read_packed_float2(xys, g_id);
+            xy_opacity_batch[tr] = packed_float3(xy.x, xy.y, opacities[g_id]);
+            conic_batch[tr] = packed_float3(read_packed_float3(conics, g_id));
+            rgbs_batch[tr] = packed_float3(read_packed_float3(colors, g_id));
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        const int batch_size = min((int)BLOCK_SIZE, range.y - batch_start);
+        for (int t = 0; t < batch_size && !done; ++t) {
+            const int g_idx = batch_start + t;
+            const float3 conic = conic_batch[t];
+            const float3 xy_opac = xy_opacity_batch[t];
+            const float2 delta = {xy_opac.x - px, xy_opac.y - py};
+            const float sigma =
+                0.5f * (conic.x * delta.x * delta.x + conic.z * delta.y * delta.y) +
+                conic.y * delta.x * delta.y;
+            idx = g_idx + 1;
+            if (sigma < 0.f) {
+                continue;
+            }
+            const float alpha = min(0.999f, xy_opac.z * exp(-sigma));
+            if (alpha < 1.f / 255.f) {
+                continue;
+            }
+            const float next_T = T * (1.f - alpha);
+            if (next_T <= 1e-4f) {
+                // render the last gaussian that contributed
+                idx = g_idx - 1;
+                done = true;
+                break;
+            }
+            const float vis = alpha * T;
+            pix_out += float3(rgbs_batch[t]) * vis;
+            T = next_T;
+        }
+    }
+
+    if (!inside) return;
+
+    final_Ts[pix_id] = T; // transmittance at last gaussian in this pixel
+    final_index[pix_id] = (idx == range.y) ? idx - 1 : idx;
+    write_packed_float3(out_img, pix_id,
+        pix_out + T * float3(background[0], background[1], background[2]));
 }
 
 kernel void nd_rasterize_forward_kernel(
@@ -797,66 +913,55 @@ kernel void get_tile_bin_edges_kernel(
 }
 
 inline int warp_reduce_all_max(int val, const int warp_size) {
-    // This uses an xor so that all threads in a warp get the same result
-    for ( int mask = warp_size / 2; mask > 0; mask /= 2 )
-        val = max(val, simd_shuffle_xor(val, mask));
-
-    return val;
+    return simd_max(val);
 }
 
 inline int warp_reduce_all_or(int val, const int warp_size) {
-    // This uses an xor so that all threads in a warp get the same result
-    for ( int mask = warp_size / 2; mask > 0; mask /= 2 )
-        val = val | simd_shuffle_xor(val, mask);
-
-    return val;
+    return simd_any(val != 0) ? 1 : 0;
 }
 
 inline float warp_reduce_sum(float val, const int warp_size, const uint lane) {
-    for (int offset = warp_size / 2; offset > 0; offset /= 2) {
-        float other = 0.0f;
-        if (lane + offset <= warp_size)
-            other = simd_shuffle_xor(val, offset);
-        val += other;
-    }
-    return val;
+    return simd_sum(val);
 }
 
 inline float3 warpSum3(float3 val, const int warp_size, const uint lane) {
-    val.x = warp_reduce_sum(val.x, warp_size, lane);
-    val.y = warp_reduce_sum(val.y, warp_size, lane);
-    val.z = warp_reduce_sum(val.z, warp_size, lane);
-    return val;
+    return float3(simd_sum(val.x), simd_sum(val.y), simd_sum(val.z));
 }
 
 inline float2 warpSum2(float2 val, const int warp_size, const uint lane) {
-    val.x = warp_reduce_sum(val.x, warp_size, lane);
-    val.y = warp_reduce_sum(val.y, warp_size, lane);
-    return val;
+    return float2(simd_sum(val.x), simd_sum(val.y));
 }
 
 inline float warpSum(float val, const int warp_size, const uint lane) {
-    return warp_reduce_sum(val, warp_size, lane);
+    return simd_sum(val);
 }
 
 kernel void rasterize_backward_kernel(
     constant uint3& tile_bounds,
     constant uint2& img_size,
-    constant int32_t* gaussian_ids_sorted,
-    constant int* tile_bins, // int2
-    constant float* xys, // float2
-    constant float* conics, // float3
-    constant float* rgbs, // float3
-    constant float* opacities,
+    device const int32_t* gaussian_ids_sorted,
+    device const int* tile_bins, // int2
+    device const float* xys, // float2
+    device const float* conics, // float3
+    device const float* rgbs, // float3
+    device const float* opacities,
     constant float* background, // single float3
-    constant float* final_Ts,
-    constant int* final_index,
-    constant float* v_output, // float3
-    constant float* v_output_alpha,
+    device const float* final_Ts,
+    device const int* final_index,
+    device const float* v_output, // float3
+    device const float* v_output_alpha,
     device atomic_float* v_xy, // float2
     device atomic_float* v_conic, // float3
     device atomic_float* v_rgb, // float3
     device atomic_float* v_opacity,
+    constant int& num_points,
+    constant int& has_densification,
+    constant int& has_edge,
+    constant int& has_xy_abs,
+    device const float* error_map,
+    device const float* edge_map,
+    device atomic_float* densification_info, // [4, num_points]
+    device atomic_float* v_xy_abs, // [num_points, 2]
     uint3 gp [[thread_position_in_grid]],
     uint3 blockIdx [[threadgroup_position_in_grid]],
     uint tr [[thread_index_in_threadgroup]],
@@ -891,13 +996,15 @@ kernel void rasterize_backward_kernel(
     const int num_batches = (range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE;
 
     threadgroup int32_t id_batch[BLOCK_SIZE];
-    threadgroup float3 xy_opacity_batch[BLOCK_SIZE];
-    threadgroup float3 conic_batch[BLOCK_SIZE];
-    threadgroup float3 rgbs_batch[BLOCK_SIZE];
+    threadgroup packed_float3 xy_opacity_batch[BLOCK_SIZE];
+    threadgroup packed_float3 conic_batch[BLOCK_SIZE];
+    threadgroup packed_float3 rgbs_batch[BLOCK_SIZE];
 
     // df/d_out for this pixel
     const float3 v_out = read_packed_float3(v_output, pix_id);
     const float v_out_alpha = v_output_alpha[pix_id];
+    const float pix_err = (has_densification != 0 && inside) ? error_map[pix_id] : 1.0f;
+    const float pix_edge = (has_densification != 0 && has_edge != 0 && inside) ? edge_map[pix_id] : 0.0f;
 
     // collect and process batches of gaussians
     // each thread loads one gaussian at a time before rasterizing
@@ -918,9 +1025,9 @@ kernel void rasterize_backward_kernel(
             id_batch[tr] = g_id;
             const float2 xy = read_packed_float2(xys, g_id);
             const float opac = opacities[g_id];
-            xy_opacity_batch[tr] = {xy.x, xy.y, opac};
-            conic_batch[tr] = read_packed_float3(conics, g_id);
-            rgbs_batch[tr] = read_packed_float3(rgbs, g_id);
+            xy_opacity_batch[tr] = packed_float3(xy.x, xy.y, opac);
+            conic_batch[tr] = packed_float3(read_packed_float3(conics, g_id));
+            rgbs_batch[tr] = packed_float3(read_packed_float3(rgbs, g_id));
         }
         // wait for other threads to collect the gaussians in batch
         threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -946,7 +1053,7 @@ kernel void rasterize_backward_kernel(
                                             conic.z * delta.y * delta.y) +
                                     conic.y * delta.x * delta.y;
                 vis = exp(-sigma);
-                alpha = min(0.99f, opac * vis);
+                alpha = min(0.999f, opac * vis);
                 if (sigma < 0.f || alpha < 1.f / 255.f) {
                     valid = 0;
                 }
@@ -960,13 +1067,24 @@ kernel void rasterize_backward_kernel(
             float3 v_conic_local = {0.f, 0.f, 0.f};
             float2 v_xy_local = {0.f, 0.f};
             float v_opacity_local = 0.f;
+            float dens_w_local = 0.f;
+            float dens_e_local = 0.f;
+            float dens_g_local = 0.f;
+            float dens_c_local = 0.f;
+            float2 v_xy_abs_local = {0.f, 0.f};
             //initialize everything to 0, only set if the lane is valid
-            if(valid && alpha<0.99f){
+            if(valid){
                 // compute the current T for this gaussian
                 float ra = 1.f / (1.f - alpha);
                 T *= ra;
-                // update v_rgb for this gaussian
                 const float fac = alpha * T;
+                if (has_densification != 0){
+                    dens_w_local = fac;
+                    dens_e_local = fac * pix_err;
+                    dens_g_local = fac * pix_edge;
+                    dens_c_local = pix_err > 0.5f ? 1.0f : 0.0f;
+                }
+                // update v_rgb for this gaussian
                 float v_alpha = 0.f;
                 v_rgb_local = {fac * v_out.x, fac * v_out.y, fac * v_out.z};
 
@@ -987,11 +1105,14 @@ kernel void rasterize_backward_kernel(
                 buffer.z += rgb.z * fac;
 
                 const float v_sigma = -opac * vis * v_alpha;
-                v_conic_local = {0.5f * v_sigma * delta.x * delta.x, 
-                                        0.5f * v_sigma * delta.x * delta.y, 
+                v_conic_local = {0.5f * v_sigma * delta.x * delta.x,
+                                        0.5f * v_sigma * delta.x * delta.y,
                                         0.5f * v_sigma * delta.y * delta.y};
-                v_xy_local = {v_sigma * (conic.x * delta.x + conic.y * delta.y), 
+                v_xy_local = {v_sigma * (conic.x * delta.x + conic.y * delta.y),
                                     v_sigma * (conic.y * delta.x + conic.z * delta.y)};
+                if (has_xy_abs != 0){
+                    v_xy_abs_local = {fabs(v_xy_local.x), fabs(v_xy_local.y)};
+                }
                 v_opacity_local = vis * v_alpha;
             }
 
@@ -999,22 +1120,45 @@ kernel void rasterize_backward_kernel(
             v_conic_local = warpSum3(v_conic_local, warp_size, wr);
             v_xy_local = warpSum2(v_xy_local, warp_size, wr);
             v_opacity_local = warpSum(v_opacity_local, warp_size, wr);
+            if (has_densification != 0){
+                dens_w_local = warpSum(dens_w_local, warp_size, wr);
+                dens_e_local = warpSum(dens_e_local, warp_size, wr);
+                dens_g_local = warpSum(dens_g_local, warp_size, wr);
+                dens_c_local = warpSum(dens_c_local, warp_size, wr);
+            }
+            if (has_xy_abs != 0){
+                v_xy_abs_local = warpSum2(v_xy_abs_local, warp_size, wr);
+            }
 
-            if (wr == 0) {
-                int32_t g = id_batch[t];
-
-                atomic_fetch_add_explicit(v_rgb + 3*g + 0, v_rgb_local.x, memory_order_relaxed);
-                atomic_fetch_add_explicit(v_rgb + 3*g + 1, v_rgb_local.y, memory_order_relaxed);
-                atomic_fetch_add_explicit(v_rgb + 3*g + 2, v_rgb_local.z, memory_order_relaxed);
-                
-                atomic_fetch_add_explicit(v_conic + 3*g + 0, v_conic_local.x, memory_order_relaxed);
-                atomic_fetch_add_explicit(v_conic + 3*g + 1, v_conic_local.y, memory_order_relaxed);
-                atomic_fetch_add_explicit(v_conic + 3*g + 2, v_conic_local.z, memory_order_relaxed);
-                
-                atomic_fetch_add_explicit(v_xy + 2*g + 0, v_xy_local.x, memory_order_relaxed);
-                atomic_fetch_add_explicit(v_xy + 2*g + 1, v_xy_local.y, memory_order_relaxed);
-                
-                atomic_fetch_add_explicit(v_opacity + g, v_opacity_local, memory_order_relaxed);
+            const int dens_base = 9;
+            const int abs_base = dens_base + (has_densification != 0 ? 4 : 0);
+            const int n_slots = abs_base + (has_xy_abs != 0 ? 2 : 0);
+            if ((int)wr < n_slots) {
+                const int32_t g = id_batch[t];
+                device atomic_float* p;
+                float v;
+                if (wr < 3) {
+                    p = v_rgb + 3*g + wr;
+                    v = wr == 0 ? v_rgb_local.x : (wr == 1 ? v_rgb_local.y : v_rgb_local.z);
+                } else if (wr < 6) {
+                    p = v_conic + 3*g + (wr - 3);
+                    v = wr == 3 ? v_conic_local.x : (wr == 4 ? v_conic_local.y : v_conic_local.z);
+                } else if (wr < 8) {
+                    p = v_xy + 2*g + (wr - 6);
+                    v = wr == 6 ? v_xy_local.x : v_xy_local.y;
+                } else if (wr == 8) {
+                    p = v_opacity + g;
+                    v = v_opacity_local;
+                } else if ((int)wr < abs_base) {
+                    const int k = (int)wr - dens_base;
+                    p = densification_info + k * num_points + g;
+                    v = k == 0 ? dens_w_local : (k == 1 ? dens_e_local : (k == 2 ? dens_g_local : dens_c_local));
+                } else {
+                    const int k = (int)wr - abs_base;
+                    p = v_xy_abs + 2*g + k;
+                    v = k == 0 ? v_xy_abs_local.x : v_xy_abs_local.y;
+                }
+                atomic_fetch_add_explicit(p, v, memory_order_relaxed);
             }
         }
     }
@@ -1090,7 +1234,7 @@ kernel void nd_rasterize_backward_kernel(
         }
         const float opac = opacities[g];
         const float vis = exp(-sigma);
-        const float alpha = min(0.99f, opac * vis);
+        const float alpha = min(0.999f, opac * vis);
         if (alpha < 1.f / 255.f) {
             continue;
         }
@@ -1432,4 +1576,316 @@ kernel void compute_cov2d_bounds_kernel(
     conics[index + 1] = conic.y;
     conics[index + 2] = conic.z;
     radii[row] = radius;
+}
+
+// Fused L1 + DSSIM loss over [H,W,C] images. One kernel computes the
+// SSIM map and the closed-form partials in a threadgroup-memory tile
+// (two-pass separable 11-tap blur), one reduces to the scalar loss
+// on-device, and one produces dL/dimage directly.
+
+#define LOSS_BX 16
+#define LOSS_BY 16
+#define LOSS_HALO 5
+#define LOSS_SX (LOSS_BX + 2 * LOSS_HALO)
+#define LOSS_SY (LOSS_BY + 2 * LOSS_HALO)
+#define LOSS_C1 0.0001f
+#define LOSS_C2 0.0009f
+
+// 11-tap gaussian (sigma 1.5), matches the SSIM reference window
+constant float lossGauss[11] = {
+    0.001028380123898387f, 0.0075987582094967365f, 0.036000773310661316f,
+    0.10936068743467331f, 0.21300552785396576f, 0.26601171493530273f,
+    0.21300552785396576f, 0.10936068743467331f, 0.036000773310661316f,
+    0.0075987582094967365f, 0.001028380123898387f};
+
+inline float loss_pix(device const float* img, int y, int x, int c, int H, int W, int C){
+    if (x < 0 || x >= W || y < 0 || y >= H) return 0.0f;
+    return img[(y * W + x) * C + c];
+}
+
+inline bool loss_valid(int y, int x, int H, int W, bool validPad){
+    if (!validPad || H <= 10 || W <= 10) return true;
+    return x >= LOSS_HALO && x < W - LOSS_HALO && y >= LOSS_HALO && y < H - LOSS_HALO;
+}
+
+kernel void fused_loss_fwd_kernel(
+    constant int& H,
+    constant int& W,
+    constant int& C,
+    constant int& wantGrad,
+    device const float* rendered,
+    device const float* gt,
+    device float* ssimMap, // [H,W] channel mean
+    device half* pMu,      // [H,W,C] each (dummy when !wantGrad)
+    device half* pS1,
+    device half* pS12,
+    uint2 tpos [[thread_position_in_threadgroup]],
+    uint2 gpos [[threadgroup_position_in_grid]]
+) {
+    const int px = (int)(gpos.x * LOSS_BX + tpos.x);
+    const int py = (int)(gpos.y * LOSS_BY + tpos.y);
+    const int tileX = (int)(gpos.x * LOSS_BX);
+    const int tileY = (int)(gpos.y * LOSS_BY);
+
+    threadgroup float sTile[LOSS_SY][LOSS_SX][2];
+    threadgroup float sConv[LOSS_SY][LOSS_BX][5];
+
+    float ssimSum = 0.0f;
+    for (int c = 0; c < C; c++){
+        // Load tile + halo
+        {
+            const int tileSize = LOSS_SY * LOSS_SX;
+            const int threads = LOSS_BX * LOSS_BY;
+            const int tRank = (int)(tpos.y * LOSS_BX + tpos.x);
+            for (int tid = tRank; tid < tileSize; tid += threads){
+                const int ly = tid / LOSS_SX;
+                const int lx = tid % LOSS_SX;
+                const int gy = tileY + ly - LOSS_HALO;
+                const int gx = tileX + lx - LOSS_HALO;
+                sTile[ly][lx][0] = loss_pix(rendered, gy, gx, c, H, W, C);
+                sTile[ly][lx][1] = loss_pix(gt, gy, gx, c, H, W, C);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Horizontal pass: accumulate moments; each thread covers two rows
+        {
+            const int lx = (int)tpos.x + LOSS_HALO;
+            for (int pass = 0; pass < 2; pass++){
+                const int ly = (int)tpos.y + pass * LOSS_BY;
+                if (ly >= LOSS_SY) break;
+                float sX = 0.f, sX2 = 0.f, sY = 0.f, sY2 = 0.f, sXY = 0.f;
+                for (int d = -LOSS_HALO; d <= LOSS_HALO; d++){
+                    const float w = lossGauss[LOSS_HALO + d];
+                    const float x = sTile[ly][lx + d][0];
+                    const float y = sTile[ly][lx + d][1];
+                    sX += x * w;
+                    sX2 += x * x * w;
+                    sY += y * w;
+                    sY2 += y * y * w;
+                    sXY += x * y * w;
+                }
+                sConv[ly][tpos.x][0] = sX;
+                sConv[ly][tpos.x][1] = sX2;
+                sConv[ly][tpos.x][2] = sY;
+                sConv[ly][tpos.x][3] = sY2;
+                sConv[ly][tpos.x][4] = sXY;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Vertical pass + SSIM + partials
+        if (px < W && py < H){
+            const int ly = (int)tpos.y + LOSS_HALO;
+            const int lx = (int)tpos.x;
+            float m0 = 0.f, m1 = 0.f, m2 = 0.f, m3 = 0.f, m4 = 0.f;
+            for (int d = -LOSS_HALO; d <= LOSS_HALO; d++){
+                const float w = lossGauss[LOSS_HALO + d];
+                m0 += sConv[ly + d][lx][0] * w;
+                m1 += sConv[ly + d][lx][1] * w;
+                m2 += sConv[ly + d][lx][2] * w;
+                m3 += sConv[ly + d][lx][3] * w;
+                m4 += sConv[ly + d][lx][4] * w;
+            }
+            const float muX = m0;
+            const float muY = m2;
+            const float sigmaX = m1 - muX * muX;
+            const float sigmaY = m3 - muY * muY;
+            const float sigmaXY = m4 - muX * muY;
+
+            const float A = muX * muX + muY * muY + LOSS_C1;
+            const float B = sigmaX + sigmaY + LOSS_C2;
+            const float Cc = 2.f * muX * muY + LOSS_C1;
+            const float Dc = 2.f * sigmaXY + LOSS_C2;
+            const float s = (Cc * Dc) / (A * B);
+            ssimSum += s;
+
+            if (wantGrad){
+                const int idx = (py * W + px) * C + c;
+                const float dMu = (muY * 2.f * Dc) / (A * B) - (muY * 2.f * Cc) / (A * B)
+                                - (muX * 2.f * Cc * Dc) / (A * A * B) + (muX * 2.f * Cc * Dc) / (A * B * B);
+                pMu[idx] = half(dMu);
+                pS1[idx] = half((-Cc * Dc) / (A * B * B));
+                pS12[idx] = half((2.f * Cc) / (A * B));
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    if (px < W && py < H){
+        ssimMap[py * W + px] = ssimSum / (float)C;
+    }
+}
+
+kernel void fused_loss_reduce_kernel(
+    constant int& H,
+    constant int& W,
+    constant int& C,
+    constant int& hasMask,
+    constant float& ssimWeight,
+    constant int& validPad,
+    device const float* rendered,
+    device const float* gt,
+    device const float* ssimMap,
+    device const float* mask,
+    device atomic_float* out,
+    uint tid [[thread_position_in_threadgroup]],
+    uint gid [[thread_position_in_grid]],
+    uint gridSize [[threads_per_grid]]
+) {
+    const int numPix = H * W;
+    float lossSum = 0.0f;
+    float gateSum = 0.0f;
+    for (int p = (int)gid; p < numPix; p += (int)gridSize){
+        const int y = p / W;
+        const int x = p % W;
+        float gate;
+        if (hasMask){
+            gate = mask[p];
+        }else{
+            gate = loss_valid(y, x, H, W, validPad != 0) ? 1.0f : 0.0f;
+        }
+        if (gate != 0.0f){
+            float l1 = 0.0f;
+            for (int c = 0; c < C; c++){
+                l1 += fabs(rendered[p * C + c] - gt[p * C + c]);
+            }
+            const float contrib = (1.0f - ssimWeight) * l1
+                                + (float)C * ssimWeight * (1.0f - ssimMap[p]);
+            lossSum += gate * contrib;
+            gateSum += gate;
+        }
+    }
+
+    threadgroup float sLoss[256];
+    threadgroup float sGate[256];
+    sLoss[tid] = lossSum;
+    sGate[tid] = gateSum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1){
+        if (tid < stride){
+            sLoss[tid] += sLoss[tid + stride];
+            sGate[tid] += sGate[tid + stride];
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0){
+        atomic_fetch_add_explicit(&out[0], sLoss[0], memory_order_relaxed);
+        atomic_fetch_add_explicit(&out[1], sGate[0], memory_order_relaxed);
+    }
+}
+
+kernel void fused_loss_finalize_kernel(
+    constant int& C,
+    device float* out,
+    uint i [[thread_position_in_grid]]
+) {
+    if (i > 0) return;
+    const float denom = out[1] * (float)C + 1e-8f;
+    out[0] = out[0] / denom;
+    out[1] = denom;
+}
+
+kernel void fused_loss_bwd_kernel(
+    constant int& H,
+    constant int& W,
+    constant int& C,
+    constant int& hasMask,
+    constant float& ssimWeight,
+    constant int& validPad,
+    device const float* rendered,
+    device const float* gt,
+    device const float* mask,
+    device const half* pMu,
+    device const half* pS1,
+    device const half* pS12,
+    device const float* stats, // stats[1] = denominator
+    device const float* vLoss,
+    device float* vRendered,
+    uint2 tpos [[thread_position_in_threadgroup]],
+    uint2 gpos [[threadgroup_position_in_grid]]
+) {
+    const int px = (int)(gpos.x * LOSS_BX + tpos.x);
+    const int py = (int)(gpos.y * LOSS_BY + tpos.y);
+    const int tileX = (int)(gpos.x * LOSS_BX);
+    const int tileY = (int)(gpos.y * LOSS_BY);
+    const float chainScale = vLoss[0] / stats[1];
+
+    threadgroup float sData[LOSS_SY][LOSS_SX][3];
+    threadgroup float sConv[LOSS_SY][LOSS_BX][3];
+
+    for (int c = 0; c < C; c++){
+        float p1 = 0.f, p2 = 0.f;
+        if (px < W && py < H){
+            p1 = rendered[(py * W + px) * C + c];
+            p2 = gt[(py * W + px) * C + c];
+        }
+
+        // Load the chain-weighted partials for the tile + halo
+        {
+            const int tileSize = LOSS_SY * LOSS_SX;
+            const int threads = LOSS_BX * LOSS_BY;
+            const int tRank = (int)(tpos.y * LOSS_BX + tpos.x);
+            for (int tid = tRank; tid < tileSize; tid += threads){
+                const int ly = tid / LOSS_SX;
+                const int lx = tid % LOSS_SX;
+                const int gy = tileY + ly - LOSS_HALO;
+                const int gx = tileX + lx - LOSS_HALO;
+                const bool inside = gx >= 0 && gx < W && gy >= 0 && gy < H;
+                float chain = 0.0f;
+                if (inside){
+                    const float gate = hasMask ? mask[gy * W + gx]
+                                               : (loss_valid(gy, gx, H, W, validPad != 0) ? 1.0f : 0.0f);
+                    chain = -ssimWeight * gate * chainScale;
+                }
+                const int idx = (gy * W + gx) * C + c;
+                sData[ly][lx][0] = inside ? (float)pMu[idx] * chain : 0.0f;
+                sData[ly][lx][1] = inside ? (float)pS1[idx] * chain : 0.0f;
+                sData[ly][lx][2] = inside ? (float)pS12[idx] * chain : 0.0f;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Horizontal pass
+        {
+            const int lx = (int)tpos.x + LOSS_HALO;
+            for (int pass = 0; pass < 2; pass++){
+                const int ly = (int)tpos.y + pass * LOSS_BY;
+                if (ly >= LOSS_SY) break;
+                float a0 = 0.f, a1 = 0.f, a2 = 0.f;
+                for (int d = -LOSS_HALO; d <= LOSS_HALO; d++){
+                    const float w = lossGauss[LOSS_HALO + d];
+                    a0 += sData[ly][lx + d][0] * w;
+                    a1 += sData[ly][lx + d][1] * w;
+                    a2 += sData[ly][lx + d][2] * w;
+                }
+                sConv[ly][tpos.x][0] = a0;
+                sConv[ly][tpos.x][1] = a1;
+                sConv[ly][tpos.x][2] = a2;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Vertical pass + L1 term
+        if (px < W && py < H){
+            const int ly = (int)tpos.y + LOSS_HALO;
+            const int lx = (int)tpos.x;
+            float s0 = 0.f, s1 = 0.f, s2 = 0.f;
+            for (int d = -LOSS_HALO; d <= LOSS_HALO; d++){
+                const float w = lossGauss[LOSS_HALO + d];
+                s0 += sConv[ly + d][lx][0] * w;
+                s1 += sConv[ly + d][lx][1] * w;
+                s2 += sConv[ly + d][lx][2] * w;
+            }
+            const float gradSsim = s0 + 2.f * p1 * s1 + p2 * s2;
+
+            const float gate = hasMask ? mask[py * W + px]
+                                       : (loss_valid(py, px, H, W, validPad != 0) ? 1.0f : 0.0f);
+            const float sign = (p1 == p2) ? 0.0f : copysign(1.0f, p1 - p2);
+            const float gradL1 = (1.0f - ssimWeight) * sign * gate * chainScale;
+
+            vRendered[(py * W + px) * C + c] = gradSsim + gradL1;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
 }

@@ -1,46 +1,74 @@
-// Ported from https://github.com/Po-Hsun-Su/pytorch-ssim
-// MIT
+// Fused (1-w)*L1 + w*DSSIM photometric loss with a closed-form
+// backward
 
 #include "ssim.hpp"
+#include "gsplat.hpp"
 
-using namespace torch::indexing;
+namespace {
 
-torch::Tensor SSIM::eval(const torch::Tensor& rendered, const torch::Tensor& gt) {
-    torch::Tensor img1 = gt.permute({2, 0, 1}).index({None, "..."});
-    torch::Tensor img2 = rendered.permute({2, 0, 1}).index({None, "..."});
-    
-    if (img1.device() != window.device()){
-        window = window.to(img1.device());
+std::tuple<torch::Tensor, torch::Tensor> fusedLossForwardDispatch(
+    const torch::Tensor &rendered, const torch::Tensor &gt, const torch::Tensor &mask,
+    float ssimWeight, bool validPadding, bool wantGrad){
+#if defined(USE_CUDA) || defined(USE_HIP) || defined(USE_MPS)
+    if (!rendered.is_cpu()){
+        return fused_loss_forward_tensor(rendered, gt, mask, ssimWeight, validPadding, wantGrad);
     }
-    torch::Tensor mu1 = torch::nn::functional::conv2d(img1, window, torch::nn::functional::Conv2dFuncOptions().padding(windowSize / 2).groups(channel));
-    torch::Tensor mu2 = torch::nn::functional::conv2d(img2, window, torch::nn::functional::Conv2dFuncOptions().padding(windowSize / 2).groups(channel));
-
-    torch::Tensor mu1Sq = mu1.pow(2);
-    torch::Tensor mu2Sq = mu2.pow(2);
-    torch::Tensor mu1mu2 = mu1 * mu2;
-
-    torch::Tensor sigma1Sq = torch::nn::functional::conv2d(img1 * img1, window, torch::nn::functional::Conv2dFuncOptions().padding(windowSize / 2).groups(channel)) - mu1Sq;
-    torch::Tensor sigma2Sq = torch::nn::functional::conv2d(img2 * img2, window, torch::nn::functional::Conv2dFuncOptions().padding(windowSize / 2).groups(channel)) - mu2Sq;
-    torch::Tensor sigma12 = torch::nn::functional::conv2d(img1 * img2, window, torch::nn::functional::Conv2dFuncOptions().padding(windowSize / 2).groups(channel)) - mu1mu2;
-    
-    const float C1 = 0.01 * 0.01;
-    const float C2 = 0.03 * 0.03;
-
-    torch::Tensor ssimMap = ((2.0f * mu1mu2 + C1) * (2.0f * sigma12 + C2)) / ((mu1Sq + mu2Sq + C1) * (sigma1Sq + sigma2Sq + C2));
-
-    return ssimMap.mean();
+#endif
+    return fused_loss_forward_tensor_cpu(rendered, gt, mask, ssimWeight, validPadding, wantGrad);
 }
 
-torch::Tensor SSIM::createWindow(){
-    torch::Tensor _1DWindow = gaussian(1.5f).unsqueeze(1);
-    torch::Tensor _2DWindow = _1DWindow.mm(_1DWindow.t()).unsqueeze(0).unsqueeze(0);
-    return _2DWindow.expand({channel, 1, windowSize, windowSize}).contiguous();
+torch::Tensor fusedLossBackwardDispatch(
+    const torch::Tensor &rendered, const torch::Tensor &gt, const torch::Tensor &mask,
+    const torch::Tensor &partials, const torch::Tensor &stats, const torch::Tensor &vLoss,
+    float ssimWeight, bool validPadding){
+#if defined(USE_CUDA) || defined(USE_HIP) || defined(USE_MPS)
+    if (!rendered.is_cpu()){
+        return fused_loss_backward_tensor(rendered, gt, mask, partials, stats, vLoss, ssimWeight, validPadding);
+    }
+#endif
+    return fused_loss_backward_tensor_cpu(rendered, gt, mask, partials, stats, vLoss, ssimWeight, validPadding);
 }
 
-torch::Tensor SSIM::gaussian(float sigma) {
-    torch::Tensor gauss = torch::zeros(windowSize);
-    for (int i = 0; i < windowSize; i++) {
-        gauss[i] = std::exp(-(std::pow(std::floor(static_cast<float>(i - windowSize) / 2.0f), 2.0f)) / (2.0f * sigma * sigma));
+class FusedL1SsimLossFunction : public torch::autograd::Function<FusedL1SsimLossFunction>{
+public:
+    static torch::Tensor forward(torch::autograd::AutogradContext *ctx,
+                                 torch::Tensor rendered, // [H,W,C]
+                                 torch::Tensor gt,       // [H,W,C]
+                                 torch::Tensor mask,     // [H,W] or empty
+                                 double ssimWeight, bool validPadding){
+        auto r = fusedLossForwardDispatch(rendered.contiguous(), gt, mask,
+                                          static_cast<float>(ssimWeight), validPadding, true);
+        torch::Tensor stats = std::get<0>(r);
+        ctx->save_for_backward({ rendered, gt, mask, std::get<1>(r), stats });
+        ctx->saved_data["ssimWeight"] = ssimWeight;
+        ctx->saved_data["validPadding"] = validPadding;
+        return stats.index({0});
     }
-    return gauss / gauss.sum();
+
+    static torch::autograd::tensor_list backward(torch::autograd::AutogradContext *ctx, torch::autograd::tensor_list gradOutputs){
+        torch::autograd::variable_list saved = ctx->get_saved_variables();
+        torch::Tensor vRendered = fusedLossBackwardDispatch(
+            saved[0], saved[1], saved[2], saved[3], saved[4],
+            gradOutputs[0].contiguous(),
+            static_cast<float>(ctx->saved_data["ssimWeight"].toDouble()),
+            ctx->saved_data["validPadding"].toBool());
+        torch::Tensor none;
+        return { vRendered, none, none, none, none };
+    }
+};
+
+}
+
+torch::Tensor fusedL1SsimLoss(const torch::Tensor &rendered, const torch::Tensor &gt,
+                              const torch::Tensor &mask, float ssimWeight, bool validPadding){
+    return FusedL1SsimLossFunction::apply(rendered, gt, mask,
+                                          static_cast<double>(ssimWeight), validPadding);
+}
+
+torch::Tensor fusedL1SsimLossValue(const torch::Tensor &rendered, const torch::Tensor &gt,
+                                   float ssimWeight){
+    torch::Tensor empty;
+    auto r = fusedLossForwardDispatch(rendered.contiguous(), gt.contiguous(), empty,
+                                      ssimWeight, false, false);
+    return std::get<0>(r).index({0});
 }

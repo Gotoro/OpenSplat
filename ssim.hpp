@@ -3,24 +3,14 @@
 
 #include <torch/torch.h>
 
-// Ported from https://github.com/Po-Hsun-Su/pytorch-ssim
-// MIT
+// Fused (1-ssimWeight)*L1 + ssimWeight*DSSIM loss with autograd support.
+// mask may be an empty tensor; validPadding crops the blur border from the
+// unmasked loss
+torch::Tensor fusedL1SsimLoss(const torch::Tensor &rendered, const torch::Tensor &gt,
+                              const torch::Tensor &mask, float ssimWeight, bool validPadding);
 
-class SSIM{
-public:
-    SSIM(int windowSize, int channel) : windowSize(windowSize), channel(channel){
-        window = createWindow();
-    };
-
-    torch::Tensor eval(const torch::Tensor& rendered, const torch::Tensor& gt);
-private:
-    torch::Tensor createWindow();
-    torch::Tensor gaussian(float sigma);
-
-    int windowSize;
-    int channel;
-    torch::Tensor window;
-};
-
+// Loss value only
+torch::Tensor fusedL1SsimLossValue(const torch::Tensor &rendered, const torch::Tensor &gt,
+                                   float ssimWeight);
 
 #endif

@@ -1,4 +1,4 @@
-#include <cstdio>
+﻿#include <cstdio>
 #include <iostream>
 #include <math.h>
 #include <tuple>
@@ -15,6 +15,28 @@ std::tuple<
     torch::Tensor, // output conics
     torch::Tensor> // output radii
 compute_cov2d_bounds_tensor(const int num_pts, torch::Tensor &A);
+
+// Fused L1 + DSSIM loss over [H,W,C] float images.
+// Returns {stats, partials}: stats[0] = loss, stats[1] = normalization
+// denominator (both on device); partials holds the SSIM derivative maps
+// needed by the backward pass (empty when want_grad is false).
+std::tuple<torch::Tensor, torch::Tensor> fused_loss_forward_tensor(
+    const torch::Tensor &rendered,
+    const torch::Tensor &gt,
+    const torch::Tensor &mask, // [H,W] float or empty
+    const float ssim_weight,
+    const bool valid_padding,
+    const bool want_grad);
+
+torch::Tensor fused_loss_backward_tensor(
+    const torch::Tensor &rendered,
+    const torch::Tensor &gt,
+    const torch::Tensor &mask,
+    const torch::Tensor &partials,
+    const torch::Tensor &stats,
+    const torch::Tensor &v_loss,
+    const float ssim_weight,
+    const bool valid_padding);
 
 torch::Tensor compute_sh_forward_tensor(
     unsigned num_points,
@@ -179,5 +201,9 @@ std::
         const torch::Tensor &final_Ts,
         const torch::Tensor &final_idx,
         const torch::Tensor &v_output, // dL_dout_color
-        const torch::Tensor &v_output_alpha
+        const torch::Tensor &v_output_alpha,
+        const torch::Tensor &error_map, // [H,W] or empty
+        const torch::Tensor &edge_map, // [H,W] or empty
+        const torch::Tensor &densification_info, // [4,N] accumulated in place, or empty
+        const torch::Tensor &v_xy_abs // [N,2] accumulated in place, or empty
     );
