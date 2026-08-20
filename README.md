@@ -1,6 +1,6 @@
 # 💦 OpenSplat
 
-> **📢 OpenSplat is now part of [WebODM](https://github.com/WebODM) and will work toward greater integration with the rest of the drone mapping ecosystem!**
+> **📢 OpenSplat joins [WebODM](https://github.com/WebODM) with the goal of bringing state-of-the-art georeferenced gaussian splatting and improving workflows with the rest of the drone mapping ecosystem!**
 
 A free and open source implementation of 3D [gaussian splatting](https://www.youtube.com/watch?v=HVv_IQKlafQ) written in C++, focused on being portable, lean and fast.
 
