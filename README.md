@@ -11,8 +11,6 @@ OpenSplat takes camera poses + sparse points in [ODX](https://github.com/WebODM/
 
 Graphics card recommended, but not required! OpenSplat runs the fastest on NVIDIA, AMD and Apple (Metal) GPUs, but can also run entirely on the CPU (~100x slower).
 
-Commercial use allowed and encouraged under the terms of the [AGPLv3](https://www.tldrlegal.com/license/gnu-affero-general-public-license-v3-agpl-3-0). ✅
-
 ## Getting Started
 
 If you're on Windows, you can [buy](http://sites.fastspring.com/masseranolabs/product/opensplatforwindows) the pre-built program. This saves you time and helps support the project ❤️. Then jump directly to the [run](#run) section. As an alternative, check the [build](#build) section below.
@@ -299,6 +297,6 @@ The fused L1 + DSSIM is based on ideas from [Optimized Fully Fused Differentiabl
 
 ## License
 
-The code in this repository, unless otherwise noted, is licensed under the AGPLv3.
+The code in this repository, unless otherwise noted, is licensed under the [AGPLv3](https://www.tldrlegal.com/license/gnu-affero-general-public-license-v3-agpl-3-0).
 
 The code from [splatfacto](https://docs.nerf.studio/nerfology/methods/splat.html) is originally licensed under the Apache 2.0 license and is © 2023 The Nerfstudio Team.
