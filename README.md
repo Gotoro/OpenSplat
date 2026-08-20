@@ -1,6 +1,6 @@
 # 💦 OpenSplat
 
-> **📢 OpenSplat has joined the [WebODM](https://github.com/WebODM) ecosystem with the goal of advancing state-of-the-art research and applications for gaussian splatting!**
+> **📢 OpenSplat has joined the [WebODM](https://github.com/WebODM) ecosystem!**
 
 A free and open source implementation of 3D [gaussian splatting](https://www.youtube.com/watch?v=HVv_IQKlafQ) written in C++, focused on being portable, lean and fast.
 
