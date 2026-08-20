@@ -293,7 +293,9 @@ A single gaussian takes ~2000 bytes of memory, so currenly you need ~2GB of GPU 
 
 ## Credits
 
-The methods used in OpenSplat are originally based on [splatfacto](https://docs.nerf.studio/nerfology/methods/splat.html).
+The methods used in OpenSplat are originally based on [splatfacto](https://docs.nerf.studio/nerfology/methods/splat.html), but have been modified substantially.
+
+The fused L1 + DSSIM is based on ideas from [Optimized Fully Fused Differentiable SSIM](https://github.com/MrNeRF/optimized-fused-ssim).
 
 ## License
 
