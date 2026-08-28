@@ -213,7 +213,7 @@ endif()
 if (NOT WIN32 AND NOT APPLE)
     set(CMAKE_CUDA_COMPILER "${CUDA_TOOLKIT_ROOT_DIR}/bin/nvcc")
 endif()
-set(OpenCV_LIBS opencv_core opencv_imgproc opencv_highgui opencv_calib3d)
+set(OpenCV_LIBS opencv_core opencv_imgproc opencv_highgui)
 
 set(GSPLAT_LIBS gsplat_cpu)
 if((GPU_RUNTIME STREQUAL "CUDA") OR (GPU_RUNTIME STREQUAL "HIP"))
