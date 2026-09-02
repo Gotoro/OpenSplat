@@ -19,7 +19,8 @@ int main(int argc, char *argv[]){
     cxxopts::Options options("opensplat", "Open Source 3D Gaussian Splats generator - " APP_VERSION);
     options.add_options()
         ("i,input", "Path to nerfstudio project", cxxopts::value<std::string>())
-        ("o,output", "Path where to save output scene", cxxopts::value<std::string>()->default_value("splat.ply"))
+        ("o,output", "Path where to save output scene (default: splat.ply next to the input)", cxxopts::value<std::string>()->default_value("splat.ply"))
+        ("output-cameras", "Path where to save a cameras JSON file", cxxopts::value<std::string>()->default_value(""))
         ("s,save-every", "Save output scene every these many steps (set to -1 to disable)", cxxopts::value<int>()->default_value("-1"))
         ("resume", "Resume training from this PLY file", cxxopts::value<std::string>()->default_value(""))
         ("val", "Withhold a camera shot for validating the scene loss")
@@ -72,8 +73,15 @@ int main(int argc, char *argv[]){
 
 
     const std::string projectRoot = result["input"].as<std::string>();
-    const std::string outputScene = result["output"].as<std::string>();
-    const int saveEvery = result["save-every"].as<int>(); 
+    std::string outputScene = result["output"].as<std::string>();
+    if (result.count("output") == 0){
+        // Output next to the input scene, for a .zip, next to the archive
+        fs::path in = fs::absolute(fs::path(projectRoot));
+        if (in.filename().empty()) in = in.parent_path();
+        outputScene = (in.parent_path() / outputScene).string();
+    }
+    const std::string outputCameras = result["output-cameras"].as<std::string>();
+    const int saveEvery = result["save-every"].as<int>();
     const std::string resume = result["resume"].as<std::string>();
     const bool validate = result.count("val") > 0 || result.count("val-render") > 0;
     const std::string valImage = result["val-image"].as<std::string>();
@@ -208,7 +216,7 @@ int main(int argc, char *argv[]){
 #endif
         }
 
-        inputData.saveCameras((fs::path(outputScene).parent_path() / "cameras.json").string(), keepCrs);
+        if (!outputCameras.empty()) inputData.saveCameras(outputCameras, keepCrs);
         model.save(outputScene, numIters);
         // model.saveDebugPly("debug.ply", numIters);
 
