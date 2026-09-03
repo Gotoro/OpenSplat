@@ -1,0 +1,105 @@
+name: Windows Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build OpenSplat for Windows
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup CUDA
+        uses: Jimver/cuda-toolkit@v0.2.24
+        with:
+          cuda: "11.8.0"
+
+      - name: Download LibTorch
+        shell: pwsh
+        run: |
+          $url = "https://download.pytorch.org/libtorch/cu118/libtorch-win-shared-with-deps-2.1.2%2Bcu118.zip"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile "$env:RUNNER_TEMP\libtorch.zip"
+
+          Expand-Archive `
+            -Path "$env:RUNNER_TEMP\libtorch.zip" `
+            -DestinationPath "$env:GITHUB_WORKSPACE"
+
+      - name: Download OpenCV
+        shell: pwsh
+        run: |
+          $url = "https://github.com/opencv/opencv/releases/download/4.9.0/opencv-4.9.0-windows.exe"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile "$env:RUNNER_TEMP\opencv.exe"
+
+          Start-Process `
+            -FilePath "$env:RUNNER_TEMP\opencv.exe" `
+            -ArgumentList "/S", "/D=$env:GITHUB_WORKSPACE\opencv" `
+            -Wait
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          cmake `
+            -S . `
+            -B build `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DCMAKE_PREFIX_PATH="$env:GITHUB_WORKSPACE\libtorch" `
+            -DOPENCV_DIR="$env:GITHUB_WORKSPACE\opencv\build" `
+            -DGPU_RUNTIME=CUDA `
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cmake --build build --config Release --parallel
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          if (!(Test-Path "build\opensplat.exe")) {
+            Write-Error "opensplat.exe was not produced"
+            exit 1
+          }
+
+          & "build\opensplat.exe" --help
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path package
+
+          Copy-Item `
+            "build\opensplat.exe" `
+            "package\"
+
+          Get-ChildItem `
+            "build\*.dll" |
+            Copy-Item -Destination "package\" -Force
+
+          Compress-Archive `
+            -Path "package\*" `
+            -DestinationPath "opensplat-windows-x64.zip" `
+            -Force
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensplat-windows-x64
+          path: opensplat-windows-x64.zip
+          retention-days: 30
