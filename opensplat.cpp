@@ -149,6 +149,31 @@ int main(int argc, char *argv[]){
         std::vector<Camera> cams = std::get<0>(t);
         Camera *valCam = std::get<1>(t);
 
+        // Discard cameras that see none of the sparse points
+        {
+            torch::Tensor xyz = inputData.points.xyz;
+            std::vector<Camera> kept;
+            kept.reserve(cams.size());
+            for (Camera &cam : cams){
+                torch::Tensor R = cam.camToWorld.index({Slice(None, 3), Slice(None, 3)});
+                torch::Tensor T = cam.camToWorld.index({Slice(None, 3), Slice(3, 4)});
+                R = torch::matmul(R, torch::diag(torch::tensor({1.0f, -1.0f, -1.0f})));
+                torch::Tensor pCam = torch::matmul(xyz - T.transpose(0, 1), R);
+                torch::Tensor z = pCam.index({Slice(), 2});
+                torch::Tensor px = pCam.index({Slice(), 0}) / z * cam.fx + cam.cx;
+                torch::Tensor py = pCam.index({Slice(), 1}) / z * cam.fy + cam.cy;
+                long long inView = ((z > 0.01f) & (px >= 0.0f) & (px < static_cast<float>(cam.width)) &
+                                    (py >= 0.0f) & (py < static_cast<float>(cam.height))).sum().item<int64_t>();
+                if (inView > 0){
+                    kept.push_back(cam);
+                }else{
+                    std::cout << "Discarding " << cam.filePath << " (no points in view)" << std::endl;
+                }
+            }
+            if (kept.empty()) throw std::runtime_error("No cameras see any sparse points");
+            cams = std::move(kept);
+        }
+
         Model model(inputData,
                     cams.size(),
                     numDownscales, resolutionSchedule, shDegree, shDegreeInterval,
