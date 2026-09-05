@@ -1,3 +1,4 @@
+```yaml
 name: Windows Build
 
 on:
@@ -20,41 +21,120 @@ jobs:
         with:
           submodules: recursive
 
+      # ------------------------------------------------------------
+      # CUDA
+      # ------------------------------------------------------------
       - name: Setup CUDA
         uses: Jimver/cuda-toolkit@v0.2.24
         with:
           cuda: "11.8.0"
 
+      # ------------------------------------------------------------
+      # Cache LibTorch + OpenCV
+      # ------------------------------------------------------------
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/libtorch
+            ${{ github.workspace }}/opencv
+          key: windows-deps-libtorch-2.1.2-cu118-opencv-4.9.0
+
+      # ------------------------------------------------------------
+      # LibTorch
+      # ------------------------------------------------------------
       - name: Download LibTorch
         shell: pwsh
         run: |
-          $url = "https://download.pytorch.org/libtorch/cu118/libtorch-win-shared-with-deps-2.1.2%2Bcu118.zip"
+          $ErrorActionPreference = "Stop"
 
+          $libtorch = "$env:GITHUB_WORKSPACE\libtorch"
+
+          if (Test-Path "$libtorch\include") {
+            Write-Host "LibTorch already available from cache."
+            exit 0
+          }
+
+          $url = "https://download.pytorch.org/libtorch/cu118/libtorch-win-shared-with-deps-2.1.2%2Bcu118.zip"
+          $zip = "$env:RUNNER_TEMP\libtorch.zip"
+
+          Write-Host "Downloading LibTorch..."
           Invoke-WebRequest `
             -Uri $url `
-            -OutFile "$env:RUNNER_TEMP\libtorch.zip"
+            -OutFile $zip
 
+          Write-Host "Extracting LibTorch..."
           Expand-Archive `
-            -Path "$env:RUNNER_TEMP\libtorch.zip" `
+            -Path $zip `
             -DestinationPath "$env:GITHUB_WORKSPACE"
 
+          if (!(Test-Path "$libtorch\include")) {
+            throw "LibTorch installation failed."
+          }
+
+          Write-Host "LibTorch installed successfully."
+
+      # ------------------------------------------------------------
+      # OpenCV
+      # ------------------------------------------------------------
       - name: Download OpenCV
         shell: pwsh
         run: |
-          $url = "https://github.com/opencv/opencv/releases/download/4.9.0/opencv-4.9.0-windows.exe"
+          $ErrorActionPreference = "Stop"
 
+          $opencv = "$env:GITHUB_WORKSPACE\opencv"
+
+          if (Test-Path "$opencv\build\OpenCVConfig.cmake") {
+            Write-Host "OpenCV already available from cache."
+            exit 0
+          }
+
+          $url = "https://github.com/opencv/opencv/releases/download/4.9.0/opencv-4.9.0-windows.exe"
+          $installer = "$env:RUNNER_TEMP\opencv.exe"
+
+          Write-Host "Downloading OpenCV..."
           Invoke-WebRequest `
             -Uri $url `
-            -OutFile "$env:RUNNER_TEMP\opencv.exe"
+            -OutFile $installer
 
-          Start-Process `
-            -FilePath "$env:RUNNER_TEMP\opencv.exe" `
-            -ArgumentList "/S", "/D=$env:GITHUB_WORKSPACE\opencv" `
-            -Wait
+          Write-Host "Installing OpenCV..."
 
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList "/S", "/D=$opencv" `
+            -PassThru
+
+          # Do not allow a broken installer to consume the entire
+          # GitHub Actions job timeout.
+          if (!$process.WaitForExit(300000)) {
+            Write-Error "OpenCV installer timed out after 5 minutes."
+
+            Stop-Process `
+              -Id $process.Id `
+              -Force `
+              -ErrorAction SilentlyContinue
+
+            exit 1
+          }
+
+          if ($process.ExitCode -ne 0) {
+            throw "OpenCV installer failed with exit code $($process.ExitCode)"
+          }
+
+          if (!(Test-Path "$opencv\build\OpenCVConfig.cmake")) {
+            throw "OpenCV installation completed, but OpenCVConfig.cmake was not found."
+          }
+
+          Write-Host "OpenCV installed successfully."
+
+      # ------------------------------------------------------------
+      # Configure
+      # ------------------------------------------------------------
       - name: Configure CMake
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+
           cmake `
             -S . `
             -B build `
@@ -65,41 +145,85 @@ jobs:
             -DGPU_RUNTIME=CUDA `
             -DCMAKE_BUILD_TYPE=Release
 
+      # ------------------------------------------------------------
+      # Build
+      # ------------------------------------------------------------
       - name: Build
+        shell: pwsh
         run: |
-          cmake --build build --config Release --parallel
+          $ErrorActionPreference = "Stop"
 
+          cmake `
+            --build build `
+            --config Release `
+            --parallel
+
+      # ------------------------------------------------------------
+      # Verify
+      # ------------------------------------------------------------
       - name: Verify executable
         shell: pwsh
         run: |
-          if (!(Test-Path "build\opensplat.exe")) {
-            Write-Error "opensplat.exe was not produced"
-            exit 1
+          $ErrorActionPreference = "Stop"
+
+          $exe = "build\opensplat.exe"
+
+          if (!(Test-Path $exe)) {
+            throw "opensplat.exe was not produced."
           }
 
-          & "build\opensplat.exe" --help
+          Write-Host "OpenSplat executable found:"
+          Get-Item $exe | Format-List FullName, Length, LastWriteTime
 
+          Write-Host "Running --help..."
+          & $exe --help
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "opensplat.exe --help failed with exit code $LASTEXITCODE"
+          }
+
+      # ------------------------------------------------------------
+      # Package
+      # ------------------------------------------------------------
       - name: Package
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path package
+          $ErrorActionPreference = "Stop"
+
+          $package = "package"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $package | Out-Null
 
           Copy-Item `
             "build\opensplat.exe" `
-            "package\"
+            "$package\"
 
+          # Copy DLLs produced by the build.
           Get-ChildItem `
-            "build\*.dll" |
-            Copy-Item -Destination "package\" -Force
+            "build\*.dll" `
+            -ErrorAction SilentlyContinue |
+            Copy-Item `
+              -Destination "$package\" `
+              -Force
+
+          Write-Host "Package contents:"
+          Get-ChildItem $package | Format-Table Name, Length
 
           Compress-Archive `
-            -Path "package\*" `
+            -Path "$package\*" `
             -DestinationPath "opensplat-windows-x64.zip" `
             -Force
 
+      # ------------------------------------------------------------
+      # Artifact
+      # ------------------------------------------------------------
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: opensplat-windows-x64
           path: opensplat-windows-x64.zip
           retention-days: 30
+```
