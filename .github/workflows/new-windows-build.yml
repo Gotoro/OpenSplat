@@ -1,0 +1,196 @@
+name: Build OpenSplat for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows CUDA Build
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Windows dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # OpenCV 4.10.0
+          Write-Host "Downloading OpenCV..."
+          Invoke-WebRequest `
+            -Uri "https://github.com/opencv/opencv/releases/download/4.10.0/opencv-4.10.0-windows.exe" `
+            -OutFile "opencv.exe"
+
+          Write-Host "Installing OpenCV..."
+          Start-Process `
+            -Wait `
+            -FilePath ".\opencv.exe" `
+            -ArgumentList "-oopencv -y"
+
+          Remove-Item ".\opencv.exe" -Force
+
+          if (!(Test-Path ".\OpenCV\opencv\build\OpenCVConfig.cmake")) {
+            throw "OpenCV installation failed."
+          }
+
+      - name: Setup CUDA 12.4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          .github/workflows/cuda/Windows.ps1 12.4.0
+
+      - name: Configure CUDA environment
+        shell: pwsh
+        run: |
+          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
+
+          if (!(Test-Path "$cudaPath\bin\nvcc.exe")) {
+            throw "CUDA 12.4 was not installed correctly."
+          }
+
+          "CUDA_PATH=$cudaPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8
+          "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin" |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+          Write-Host "CUDA_PATH=$cudaPath"
+
+      - name: Download LibTorch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $url = "https://download.pytorch.org/libtorch/nightly/cu124/libtorch-win-shared-with-deps-latest.zip"
+
+          Write-Host "Downloading LibTorch..."
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile "libtorch.zip"
+
+          Write-Host "Extracting LibTorch..."
+          Expand-Archive `
+            -Path "libtorch.zip" `
+            -DestinationPath "${{ github.workspace }}"
+
+          Remove-Item "libtorch.zip" -Force
+
+          if (!(Test-Path ".\libtorch\include")) {
+            throw "LibTorch installation failed."
+          }
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          cmake `
+            -S . `
+            -B build `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DCMAKE_PREFIX_PATH="${{ github.workspace }}\libtorch" `
+            -DOPENCV_DIR="${{ github.workspace }}\OpenCV\opencv\build" `
+            -DOPENSPLAT_BUILD_SIMPLE_TRAINER=ON
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          cmake `
+            --build build `
+            --config Release `
+            --parallel
+
+      - name: Find executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Write-Host "Searching for executables..."
+          Get-ChildItem `
+            -Path ".\build" `
+            -Filter "*.exe" `
+            -Recurse |
+            Select-Object FullName, Length
+
+          $exe = Get-ChildItem `
+            -Path ".\build" `
+            -Filter "opensplat.exe" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (!$exe) {
+            throw "opensplat.exe was not produced."
+          }
+
+          Write-Host "Found: $($exe.FullName)"
+
+          & $exe.FullName --help
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "opensplat.exe --help failed."
+          }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path "package" |
+            Out-Null
+
+          $exe = Get-ChildItem `
+            -Path ".\build" `
+            -Filter "opensplat.exe" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (!$exe) {
+            throw "opensplat.exe not found."
+          }
+
+          Copy-Item `
+            $exe.FullName `
+            ".\package\opensplat.exe"
+
+          $trainer = Get-ChildItem `
+            -Path ".\build" `
+            -Filter "simple_trainer.exe" `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if ($trainer) {
+            Copy-Item `
+              $trainer.FullName `
+              ".\package\simple_trainer.exe"
+          }
+
+          Write-Host "Package contents:"
+          Get-ChildItem ".\package"
+
+          Compress-Archive `
+            -Path ".\package\*" `
+            -DestinationPath "opensplat-windows-x64.zip" `
+            -Force
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: opensplat-windows-x64
+          path: opensplat-windows-x64.zip
+          retention-days: 30
