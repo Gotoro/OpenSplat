@@ -144,22 +144,45 @@ jobs:
 
           Copy-Item $opensplat.FullName "package\opensplat.exe"
 
-          $trainer = Get-ChildItem `
-            -Path build `
-            -Filter "simple_trainer.exe" `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+          # OpenCV
+          $opencvDll = "OpenCV\opencv\build\x64\vc16\bin\opencv_world4100.dll"
 
-          if ($trainer) {
-            Copy-Item $trainer.FullName "package\simple_trainer.exe"
+          if (!(Test-Path $opencvDll)) {
+            throw "OpenCV DLL not found: $opencvDll"
           }
+
+          Copy-Item $opencvDll "package\"
+
+          # CUDA / NVIDIA DLLs required by the executable
+          $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"
+
+          $cudaDlls = @(
+            "cudart64_12.dll",
+            "cublas64_12.dll",
+            "cublasLt64_12.dll"
+          )
+
+          foreach ($dll in $cudaDlls) {
+            $source = Join-Path $cudaBin $dll
+
+            if (Test-Path $source) {
+              Copy-Item $source "package\"
+            }
+          }
+
+          # LibTorch DLLs
+          Get-ChildItem `
+            -Path "libtorch\lib" `
+            -Filter "*.dll" |
+            Copy-Item `
+              -Destination "package\" `
+              -Force
 
           Compress-Archive `
             -Path "package\*" `
             -DestinationPath "opensplat-windows-x64.zip" `
             -Force
-
+            
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
