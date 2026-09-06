@@ -132,28 +132,28 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path package | Out-Null
 
-          $opensplat = Get-ChildItem `
+          $exe = Get-ChildItem `
             -Path build `
             -Filter "opensplat.exe" `
             -Recurse |
             Select-Object -First 1
 
-          if (!$opensplat) {
+          if (!$exe) {
             throw "opensplat.exe was not produced."
           }
 
-          Copy-Item $opensplat.FullName "package\opensplat.exe"
+          Copy-Item $exe.FullName "package\opensplat.exe"
 
           # OpenCV
           $opencvDll = "OpenCV\opencv\build\x64\vc16\bin\opencv_world4100.dll"
 
           if (!(Test-Path $opencvDll)) {
-            throw "OpenCV DLL not found: $opencvDll"
+            throw "Missing OpenCV DLL: $opencvDll"
           }
 
           Copy-Item $opencvDll "package\"
 
-          # CUDA / NVIDIA DLLs required by the executable
+          # CUDA runtime DLLs
           $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4\bin"
 
           $cudaDlls = @(
@@ -170,19 +170,39 @@ jobs:
             }
           }
 
-          # LibTorch DLLs
-          Get-ChildItem `
-            -Path "libtorch\lib" `
-            -Filter "*.dll" |
-            Copy-Item `
-              -Destination "package\" `
-              -Force
+          # Only copy the LibTorch DLLs required by the executable.
+          # Start with the main Torch/C10 libraries.
+          $torchDlls = @(
+            "torch.dll",
+            "torch_cpu.dll",
+            "c10.dll",
+            "c10_cuda.dll",
+            "torch_cuda.dll"
+          )
+
+          foreach ($dll in $torchDlls) {
+            $source = Join-Path "${{ github.workspace }}\libtorch\lib" $dll
+
+            if (Test-Path $source) {
+              Copy-Item $source "package\"
+            }
+          }
+
+          Write-Host ""
+          Write-Host "Package contents:"
+          Get-ChildItem package |
+            Select-Object Name, @{Name="MB";Expression={[math]::Round($_.Length / 1MB, 2)}}
 
           Compress-Archive `
             -Path "package\*" `
             -DestinationPath "opensplat-windows-x64.zip" `
             -Force
-            
+
+          Write-Host ""
+          Write-Host "ZIP size:"
+          Get-Item "opensplat-windows-x64.zip" |
+            Select-Object Name, @{Name="MB";Expression={[math]::Round($_.Length / 1MB, 2)}}
+                  
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
