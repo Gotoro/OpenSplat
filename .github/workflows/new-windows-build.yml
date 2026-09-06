@@ -230,13 +230,8 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path "package" |
-            Out-Null
+          New-Item -ItemType Directory -Force -Path "package" | Out-Null
 
-          # Main executable
           $opensplat = Get-ChildItem `
             -Path ".\build" `
             -Filter "opensplat.exe" `
@@ -247,11 +242,9 @@ jobs:
             throw "opensplat.exe not found."
           }
 
-          Copy-Item `
-            $opensplat.FullName `
-            ".\package\opensplat.exe"
+          Copy-Item $opensplat.FullName ".\package\opensplat.exe"
 
-          # OpenCV runtime
+          # OpenCV
           $opencv = Get-ChildItem `
             -Path ".\OpenCV" `
             -Filter "opencv_world4100.dll" `
@@ -262,55 +255,38 @@ jobs:
             throw "opencv_world4100.dll not found."
           }
 
-          Copy-Item `
-            $opencv.FullName `
-            ".\package\"
+          Copy-Item $opencv.FullName ".\package\"
 
           # LibTorch runtime DLLs
-          $torchDlls = @(
-            "c10.dll",
-            "c10_cuda.dll",
-            "torch.dll",
-            "torch_cpu.dll",
-            "torch_cuda.dll"
-          )
+          $torchBin = "${{ github.workspace }}\libtorch\bin"
 
-          foreach ($dll in $torchDlls) {
-            $source = Join-Path "${{ github.workspace }}\libtorch\lib" $dll
-
-            if (Test-Path $source) {
-              Copy-Item `
-                $source `
-                ".\package\" `
-                -Force
-            }
+          if (!(Test-Path $torchBin)) {
+            throw "LibTorch bin directory not found: $torchBin"
           }
+
+          Get-ChildItem `
+            -Path $torchBin `
+            -Filter "*.dll" |
+            Copy-Item -Destination ".\package\" -Force
 
           # CUDA runtime DLLs
           $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin"
 
-          $cudaDlls = @(
-            "cudart64_12.dll",
-            "cublas64_12.dll",
-            "cublasLt64_12.dll"
-          )
-
-          foreach ($dll in $cudaDlls) {
-            $source = Join-Path $cudaBin $dll
-
-            if (Test-Path $source) {
-              Copy-Item `
-                $source `
-                ".\package\" `
-                -Force
-            }
+          if (!(Test-Path $cudaBin)) {
+            throw "CUDA bin directory not found: $cudaBin"
           }
+
+          Get-ChildItem `
+            -Path $cudaBin `
+            -Filter "*.dll" |
+            Copy-Item -Destination ".\package\" -Force
 
           Write-Host ""
           Write-Host "Package contents:"
           Get-ChildItem ".\package" |
             Select-Object Name,
-              @{Name="MB";Expression={[math]::Round($_.Length / 1MB, 2)}}
+              @{Name="MB";Expression={[math]::Round($_.Length / 1MB, 2)}} |
+            Sort-Object Name
 
           Compress-Archive `
             -Path ".\package\*" `
@@ -322,7 +298,7 @@ jobs:
           Get-Item "opensplat-windows-x64.zip" |
             Select-Object Name,
               @{Name="MB";Expression={[math]::Round($_.Length / 1MB, 2)}}
-
+              
       - name: Upload Windows Build
         uses: actions/upload-artifact@v4
         with:
