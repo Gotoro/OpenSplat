@@ -230,8 +230,10 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          New-Item -ItemType Directory -Force -Path "package" | Out-Null
+          Remove-Item ".\package" -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path ".\package" | Out-Null
 
+          # OpenSplat executable
           $opensplat = Get-ChildItem `
             -Path ".\build" `
             -Filter "opensplat.exe" `
@@ -257,29 +259,48 @@ jobs:
 
           Copy-Item $opencv.FullName ".\package\"
 
-          # LibTorch runtime DLLs
-          $torchBin = "${{ github.workspace }}\libtorch\bin"
+          # LibTorch DLLs
+          $torchLib = "${{ github.workspace }}\libtorch\lib"
 
-          if (!(Test-Path $torchBin)) {
-            throw "LibTorch bin directory not found: $torchBin"
+          if (!(Test-Path $torchLib)) {
+            throw "LibTorch lib directory not found: $torchLib"
           }
 
           Get-ChildItem `
-            -Path $torchBin `
+            -Path $torchLib `
             -Filter "*.dll" |
-            Copy-Item -Destination ".\package\" -Force
+            Copy-Item `
+              -Destination ".\package\" `
+              -Force
 
-          # CUDA runtime DLLs
+          # CUDA runtime DLLs needed by LibTorch/OpenSplat
           $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8\bin"
 
-          if (!(Test-Path $cudaBin)) {
-            throw "CUDA bin directory not found: $cudaBin"
+          $cudaDlls = @(
+            "cudart64_12.dll",
+            "cublas64_12.dll",
+            "cublasLt64_12.dll",
+            "cusparse64_12.dll"
+          )
+
+          foreach ($dll in $cudaDlls) {
+            $source = Join-Path $cudaBin $dll
+
+            if (Test-Path $source) {
+              Copy-Item $source ".\package\" -Force
+            }
           }
 
-          Get-ChildItem `
-            -Path $cudaBin `
-            -Filter "*.dll" |
-            Copy-Item -Destination ".\package\" -Force
+          # NVIDIA CUPTI
+          $cuptiDll = Get-ChildItem `
+            -Path "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8" `
+            -Filter "cupti64_*.dll" `
+            -Recurse |
+            Select-Object -First 1
+
+          if ($cuptiDll) {
+            Copy-Item $cuptiDll.FullName ".\package\" -Force
+          }
 
           Write-Host ""
           Write-Host "Package contents:"
@@ -294,11 +315,10 @@ jobs:
             -Force
 
           Write-Host ""
-          Write-Host "Final ZIP:"
-          Get-Item "opensplat-windows-x64.zip" |
-            Select-Object Name,
-              @{Name="MB";Expression={[math]::Round($_.Length / 1MB, 2)}}
-              
+          Write-Host "Final ZIP size:"
+          $zip = Get-Item "opensplat-windows-x64.zip"
+          Write-Host "$([math]::Round($zip.Length / 1GB, 2)) GB"
+          
       - name: Upload Windows Build
         uses: actions/upload-artifact@v4
         with:
